@@ -25,9 +25,12 @@ namespace Telhai.DotNet.PlayerProject
         private bool isDragging = false;
         private const string FILE_NAME = "library.json";
 
-        // שירות ה-API וביטול קריאות (דרישת המטלה)
         private readonly ItunesService _itunesService = new ItunesService();
         private CancellationTokenSource? _cts;
+
+        private DispatcherTimer slideshowTimer = new DispatcherTimer();
+        private int currentImageIndex = 0;
+        private MusicTrack? currentlyPlayingTrack = null;
 
         public MusicPlayer()
         {
@@ -35,6 +38,10 @@ namespace Telhai.DotNet.PlayerProject
             timer.Interval = TimeSpan.FromMilliseconds(500);
             timer.Tick += new EventHandler(Timer_Tick);
             this.Loaded += MusicPlayer_Loaded;
+
+            slideshowTimer.Interval = TimeSpan.FromSeconds(3);
+            slideshowTimer.Tick += SlideshowTimer_Tick;
+            mediaPlayer.MediaEnded += MediaPlayer_MediaEnded;
         }
 
         private void MusicPlayer_Loaded(object sender, RoutedEventArgs e)
@@ -42,7 +49,6 @@ namespace Telhai.DotNet.PlayerProject
             this.LoadLibrary();
         }
 
-        // דרישה: לחיצה רגילה מציגה שם ומסלול קובץ
         private void LstLibrary_SelectionChanged(object sender, SelectionChangedEventArgs e)
         {
             if (lstLibrary.SelectedItem is MusicTrack track)
@@ -50,26 +56,68 @@ namespace Telhai.DotNet.PlayerProject
                 txtCurrentSong.Text = track.Title;
                 txtFilePath.Text = track.FilePath;
 
-                // איפוס שדות ה-API בבחירה חדשה כדי למנוע בלבול
-                txtArtist.Text = "";
-                txtAlbum.Text = "";
-                imgAlbumArt.Source = new BitmapImage(new Uri("https://via.placeholder.com/180?text=Selected"));
+                if (track == currentlyPlayingTrack && track.LocalImages != null && track.LocalImages.Count > 0)
+                {
+                    imgAlbumArt.Source = new BitmapImage(new Uri(track.LocalImages[currentImageIndex]));
+                }
+                else
+                {
+                    UpdateUIWithTrackData(track);
+                }
             }
         }
 
-        // דרישה: לחיצה כפולה מנגנת ומפעילה API אסינכרוני
         private async void LstLibrary_MouseDoubleClick(object sender, MouseButtonEventArgs e)
         {
+
             if (lstLibrary.SelectedItem is MusicTrack track)
             {
+                currentlyPlayingTrack = track;
                 PlayTrack(track);
 
-                // ביטול קריאה קודמת (דרישה: CancellationToken)
-                _cts?.Cancel();
-                _cts = new CancellationTokenSource();
+                currentImageIndex = 0;
 
-                // הפעלת API במקביל לניגון (ללא חסימת ממשק)
-                await LoadSongExtraInfoAsync(track.Title, _cts.Token);
+                if (!string.IsNullOrEmpty(track.Artist))
+                {
+                    UpdateUIWithTrackData(track);
+                    if (track.LocalImages != null && track.LocalImages.Count > 0)
+                    {
+                        imgAlbumArt.Source = new BitmapImage(new Uri(track.LocalImages[0]));
+                    }
+                    txtStatus.Text = "Playing (Loaded from Cache)";
+                }
+                else
+                {
+                    _cts?.Cancel();
+                    _cts = new CancellationTokenSource();
+                    await LoadSongExtraInfoAsync(track, _cts.Token);
+
+                    if (track.LocalImages != null && track.LocalImages.Count > 0)
+                    {
+                        imgAlbumArt.Source = new BitmapImage(new Uri(track.LocalImages[0]));
+                    }
+                }
+
+                slideshowTimer.Start();
+            }
+        }
+
+        private void UpdateUIWithTrackData(MusicTrack track)
+        {
+            txtArtist.Text = track.Artist;
+            txtAlbum.Text = track.Album;
+
+            if (!string.IsNullOrEmpty(track.ArtworkUrl))
+            {
+                imgAlbumArt.Source = new BitmapImage(new Uri(track.ArtworkUrl));
+            }
+            else if (track.LocalImages != null && track.LocalImages.Count > 0)
+            {
+                imgAlbumArt.Source = new BitmapImage(new Uri(track.LocalImages[0]));
+            }
+            else
+            {
+                imgAlbumArt.Source = null;
             }
         }
 
@@ -81,42 +129,59 @@ namespace Telhai.DotNet.PlayerProject
             txtStatus.Text = "Playing";
         }
 
-        private async Task LoadSongExtraInfoAsync(string songTitle, CancellationToken token)
+        private async Task LoadSongExtraInfoAsync(MusicTrack track, CancellationToken token)
         {
             try
             {
                 txtStatus.Text = "Searching Info...";
-
-                // קריאה לשירות ה-API
-                var info = await _itunesService.SearchOneAsync(songTitle, token);
+                var info = await _itunesService.SearchOneAsync(track.Title, token);
 
                 if (info != null)
                 {
-                    txtArtist.Text = info.ArtistName;
-                    txtAlbum.Text = info.AlbumName;
-                    if (!string.IsNullOrEmpty(info.ArtworkUrl))
-                    {
-                        imgAlbumArt.Source = new BitmapImage(new Uri(info.ArtworkUrl));
-                    }
-                    txtStatus.Text = "Playing (Info Loaded)";
-                }
-                else
-                {
-                    txtStatus.Text = "No API Info Found";
-                    imgAlbumArt.Source = new BitmapImage(new Uri("https://via.placeholder.com/180?text=No+Info"));
+                    track.Artist = info.ArtistName;
+                    track.Album = info.AlbumName;
+                    track.ArtworkUrl = info.ArtworkUrl;
+
+                    UpdateUIWithTrackData(track);
+                    SaveLibrary();
+                    txtStatus.Text = "Playing (Info Loaded & Saved)";
                 }
             }
-            catch (OperationCanceledException)
+            catch (OperationCanceledException) { }
+            catch (Exception) { txtStatus.Text = "API Error"; }
+        }
+
+        private void SlideshowTimer_Tick(object? sender, EventArgs e)
+        {
+            if (currentlyPlayingTrack != null &&
+                lstLibrary.SelectedItem == currentlyPlayingTrack &&
+                currentlyPlayingTrack.LocalImages != null &&
+                currentlyPlayingTrack.LocalImages.Count > 1)
             {
-                // קריאה בוטלה עקב מעבר שיר - אין צורך בפעולה
-            }
-            catch (Exception)
-            {
-                txtStatus.Text = "API Error";
+                currentImageIndex = (currentImageIndex + 1) % currentlyPlayingTrack.LocalImages.Count;
+                imgAlbumArt.Source = new BitmapImage(new Uri(currentlyPlayingTrack.LocalImages[currentImageIndex]));
             }
         }
 
-        // --- פונקציות קיימות בנגן ---
+        private void BtnEdit_Click(object sender, RoutedEventArgs e)
+        {
+            if (lstLibrary.SelectedItem is MusicTrack track)
+            {
+                int selectedIndex = lstLibrary.SelectedIndex;
+
+                var vm = new EditSongViewModel(track);
+                var editWin = new EditSongWindow { DataContext = vm, Owner = this };
+                editWin.ShowDialog();
+
+                UpdateLibraryUI();
+
+                lstLibrary.SelectedIndex = selectedIndex;
+
+                SaveLibrary();
+                UpdateUIWithTrackData(track);
+                txtCurrentSong.Text = track.Title;
+            }
+        }
 
         private void Timer_Tick(object? sender, EventArgs e)
         {
@@ -130,10 +195,19 @@ namespace Telhai.DotNet.PlayerProject
 
         private void BtnPlay_Click(object sender, RoutedEventArgs e)
         {
-            if (lstLibrary.SelectedItem != null)
+            if (lstLibrary.SelectedItem is MusicTrack track)
             {
+                currentlyPlayingTrack = track;
                 mediaPlayer.Play();
                 timer.Start();
+
+                if (track.LocalImages != null && track.LocalImages.Count > 0)
+                {
+                    currentImageIndex = 0;
+                    imgAlbumArt.Source = new BitmapImage(new Uri(track.LocalImages[0]));
+                }
+
+                slideshowTimer.Start();
                 txtStatus.Text = "Playing";
             }
         }
@@ -141,13 +215,11 @@ namespace Telhai.DotNet.PlayerProject
         private void BtnPause_Click(object sender, RoutedEventArgs e)
         {
             mediaPlayer.Pause();
+            slideshowTimer.Stop();
             txtStatus.Text = "Paused";
         }
 
-        private void SliderVolume_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
-        {
-            mediaPlayer.Volume = sliderVolume.Value;
-        }
+        private void SliderVolume_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e) => mediaPlayer.Volume = sliderVolume.Value;
 
         private void SliderProgress_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e) => isDragging = true;
 
@@ -158,8 +230,6 @@ namespace Telhai.DotNet.PlayerProject
         }
 
         private void SliderProgress_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e) { }
-
-        // --- ניהול ספרייה ---
 
         private void BtnAdd_Click(object sender, RoutedEventArgs e)
         {
@@ -180,6 +250,16 @@ namespace Telhai.DotNet.PlayerProject
                 library.Remove(track);
                 UpdateLibraryUI();
                 SaveLibrary();
+
+                txtCurrentSong.Text = "No Song Selected";
+                txtArtist.Text = "";
+                txtAlbum.Text = "";
+                txtFilePath.Text = "";
+                txtStatus.Text = "Ready";
+                imgAlbumArt.Source = null;
+
+                mediaPlayer.Stop();
+                slideshowTimer.Stop();
             }
         }
 
@@ -209,6 +289,25 @@ namespace Telhai.DotNet.PlayerProject
                 SaveLibrary();
             };
             settingsWin.ShowDialog();
+        }
+
+        private void MediaPlayer_MediaEnded(object? sender, EventArgs e)
+        {
+            currentlyPlayingTrack = null;
+
+            mediaPlayer.Stop();
+            mediaPlayer.Position = TimeSpan.Zero;
+
+            slideshowTimer.Stop();
+            timer.Stop();
+
+            txtStatus.Text = "Finished";
+            sliderProgress.Value = 0;
+
+            if (lstLibrary.SelectedItem is MusicTrack track)
+            {
+                UpdateUIWithTrackData(track);
+            }
         }
     }
 }

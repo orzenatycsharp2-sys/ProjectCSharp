@@ -1,21 +1,14 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
+﻿using System.Collections.Generic;
 
 namespace Telhai.DotNet.PlayerProject.Models
 {
     public class MusicTrack
     {
-        public string Title { get; set; } = string.Empty;
-        public string FilePath { get; set; } = string.Empty;
-
-        // This makes sure the ListBox shows the Name, not "MyMusicPlayer.MusicTrack"
-        public override string ToString()
-        {
-            return Title;
-
-        }
+        public string Title { get; set; } = "";
+        public string FilePath { get; set; } = "";
+        public string? Artist { get; set; }
+        public string? Album { get; set; }
+        public string? ArtworkUrl { get; set; }
+        public List<string> LocalImages { get; set; } = new List<string>();
     }
 }
